@@ -1,11 +1,12 @@
 # CD12352 - Infrastructure as Code Project Solution
-# [YOUR NAME HERE]
+# Miro
 
 ## Spin up instructions
-TODO
-
+./run.sh create network-stack network.yml network-parameters.json
+./run.sh create udagram-stack udagram.yml udagram-parameters.json
 ## Tear down instructions
-TODO
+./run.sh delete network-stack 
+./run.sh delete udagram-stack 
 
 ## Other considerations
-TODO (optional)
+Region is fixed to "eu-central-1" because I had some proxy issues.
