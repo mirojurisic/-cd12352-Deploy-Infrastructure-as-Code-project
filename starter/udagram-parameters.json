@@ -1,6 +1,14 @@
 [
 	{
-		"ParameterKey": "Add you parameters here",
-		"ParameterValue": "Add you parameters here"
+		"ParameterKey": "KeyPairName",
+		"ParameterValue": "udagram-kp"
+	},
+	{
+		"ParameterKey": "BastionName",
+		"ParameterValue": "UdagramBastion"
+	},
+	{
+		"ParameterKey": "ProjectName",
+		"ParameterValue": "Udagram-Miro"
 	}
 ]

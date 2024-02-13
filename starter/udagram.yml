@@ -1,18 +1,253 @@
-Description: CD12352 - Infrastructure as Code Project - Udagram
-
 Parameters:
-  # Add your parameters here
+  KeyPairName:
+    Description: Key-pair used to ssh into bastion host
+    Type: String
+  BastionName:
+    Description: Name of the bastion host
+    Type: String
+  ProjectName:
+    Description: An environment name that will be prefixed to resource names
+    Type: String
 
 Resources:
-  # Add your resources here
-  # We include a portion of the LaunchTemplate resource so you can use the UserData.
-  WebAppLaunchTemplate:
+
+  # Bastion Security Group - access from anywhere using pem file
+  BastionSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ProjectName
+      VpcId: !ImportValue VpcId
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 194.93.185.0/8
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: 194.93.185.0/8
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        SourceSecurityGroupId: !Ref AppLoadBalancerSG
+      Tags:
+        - Key: Name
+          Value: Udagram-BastionSG
+  # Bastion launch configuration, specify: pem file, instance image, instance size, startup script, security group
+  BastionLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties: 
       LaunchTemplateData:
+        ImageId: ami-0faab6bdbac9486fb
+        SecurityGroupIds:
+          - !Ref BastionSG
+        InstanceType: t2.micro
+        KeyName: udagram-kp
+        BlockDeviceMappings:
+        - DeviceName: "/dev/sdk"
+          Ebs:
+            VolumeSize: '10'
         UserData:
           Fn::Base64: |
             #!/bin/bash
             apt-get update -y
-            sudo apt-get install nginx -y
-            service nginx start
+            sudo apt-get install aws-cli
+            sudo apt-get update -y
+            sudo apt-get install apache2 -y
+            sudo systemctl restart apache2
+            echo "it works! Udagram, Udacity" > index.html
+            sudo cp index.html /var/www/html/index.html
+  # Bastion EC2 instance based on launch config and subnet location
+  BastionInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref BastionLaunchTemplate
+        Version: !GetAtt BastionLaunchTemplate.LatestVersionNumber
+      SubnetId:
+        Fn::ImportValue:
+          !Sub "${ProjectName}-PUB1-SN"
+      Tags:
+           - Key: Name
+             Value: Bastion
+
+# # give permission to EC2 to read and write to s3 to application server
+  ApplicationServerRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: InstanceRolePolicy-s3-rw
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: ["s3:ListBucket","s3:*Object"]
+                Resource: 
+                 - !GetAtt  WebAppS3Bucket.Arn
+      RoleName: 'Instance-s3'
+
+  ApplicationServerProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref ApplicationServerRole
+
+
+# # application servers SG
+  AppServerSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !ImportValue VpcId
+      GroupName: AppServerSG
+      GroupDescription: "Security group for application server"
+      # allow access from BastionInstance and application load balancer
+      SecurityGroupIngress:
+        - IpProtocol: 'tcp'
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !Ref BastionSG
+        - IpProtocol: 'tcp'
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref AppLoadBalancerSG
+      Tags:
+        - Key: Name
+          Value: AppServerSG
+
+  AppLaunchTemplate:
+    Type: 'AWS::EC2::LaunchTemplate'
+    Properties:
+      LaunchTemplateName: !Sub ${ProjectName}-app
+      LaunchTemplateData:
+        IamInstanceProfile: 
+          Name: !Ref ApplicationServerProfile
+        ImageId: ami-0faab6bdbac9486fb
+        InstanceType: t2.micro
+        SecurityGroupIds:
+          - !Ref AppServerSG
+        BlockDeviceMappings:
+        - DeviceName: "/dev/sdk"
+          Ebs:
+            VolumeSize: '10'
+        UserData:
+          Fn::Base64: |
+            #!/bin/bash
+            apt-get update -y
+            sudo apt-get install aws-cli
+            sudo apt-get update -y
+            sudo apt-get install apache2 -y
+            sudo systemctl restart apache2
+            echo "it works! Udagram, Udacity" > index.html
+            sudo cp index.html /var/www/html/index.html
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref AppLaunchTemplate
+        Version: !GetAtt AppLaunchTemplate.LatestVersionNumber
+      MaxSize: '6'
+      MinSize: '2'
+      DesiredCapacity: '2'
+      VPCZoneIdentifier:
+        - Fn::ImportValue:
+             !Sub ${ProjectName}-PRIV1-SN
+        - Fn::ImportValue:
+             !Sub ${ProjectName}-PRIV2-SN
+      TargetGroupARNs: 
+        - !Ref AppLoadBalancerTargetGroup
+
+# Load Balancer can receive traffic on port 80
+  AppLoadBalancerSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: AppLoadBalancerSG
+      GroupDescription: "Security group for this application server"
+      SecurityGroupEgress:
+      - IpProtocol: -1
+        CidrIp: 0.0.0.0/0
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+      VpcId: !ImportValue VpcId
+      Tags:
+          - Key: Name
+            Value: AppLoadBalancerSG
+# Load Balancer is in public subnets and can receive traffic on port 80
+  AppLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: application-alb
+      SecurityGroups:
+      - !GetAtt AppLoadBalancerSG.GroupId
+      Subnets:
+        - Fn::ImportValue:
+             !Sub ${ProjectName}-PUB1-SN
+        - Fn::ImportValue:
+             !Sub ${ProjectName}-PUB2-SN
+# Load Balancer transfers traffic to autoscale group
+  AppLoadBalancerTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckEnabled: true
+      HealthCheckIntervalSeconds: 60
+      HealthCheckPath: /index.html
+      Name: AppLoadBalancerTargetGroup
+      Port: 80
+      VpcId: !ImportValue VpcId
+      Protocol: HTTP
+      TargetType: instance
+      # Targets:
+      # - Id: !Ref BastionInstance
+      # - Id: !Ref AutoScalingGroup
+
+
+  AppLoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref AppLoadBalancerTargetGroup
+      LoadBalancerArn: !Ref AppLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  WebAppS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        !Join ["-", ["miniudagram", "-miro"]]
+      AccessControl: Private
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+
+Outputs:
+
+  ApplicationURL:
+    Value: !Join
+          - ''
+          - - 'http://'
+            - !GetAtt  AppLoadBalancer.DNSName
+
+  BastionInstanceIP:
+    Value: !Join ["", ["http://", !GetAtt  BastionInstance.PublicDnsName]]
+  BastionURL:
+    Value: !GetAtt BastionInstance.PublicIp

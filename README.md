@@ -47,3 +47,18 @@ No tests required for this project.
 ## License
 
 [License](LICENSE.txt)
+
+## Instructions
+
+I had some issues with other region do to proxy settings so I fixed the region to eu-central-1.
+
+Change directory to /starter and run following commands:
+
+EXECUTION_MODE=$1
+STACK_NAME=$2
+TEMPLATE_FILE_NAME=$3
+PARAMETERS_FILE_NAME=$4
+# Usage examples:
+#   ./run.sh <action>  <stack-name> <name of template file>.yml <name of parameter file>.json
+
+action can be create or update. For delete action you only need stack-name.
